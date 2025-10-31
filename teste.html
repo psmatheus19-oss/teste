@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Overlay Camera — Guia de Desenho</title>
+  <style>
+    :root{--bg:#0b0b0c;--panel:#111;--accent:#09f}
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+    body{background:linear-gradient(180deg,#050505 0%, #0d0d0f 100%);color:#e9eef6;display:flex;align-items:center;justify-content:center;padding:12px}
+    .app{width:100%;max-width:980px;background:var(--panel);border-radius:14px;padding:12px;box-shadow:0 6px 30px rgba(0,0,0,.6)}
+    .top{display:flex;gap:12px;align-items:center}
+    .stage{position:relative;flex:1;min-height:520px;background:#000;border-radius:10px;overflow:hidden}
+    video, canvas {width:100%;height:100%;object-fit:cover;display:block}
+    .overlay-img{position:absolute;left:0;top:0;touch-action:none;transform-origin:0 0;will-change:transform,opacity}
+    .controls{width:320px;display:flex;flex-direction:column;gap:8px;padding:8px}
+    .row{display:flex;gap:8px;align-items:center}
+    input[type=range]{width:100%}
+    button,input[type=file]{background:#0f1720;border:1px solid rgba(255,255,255,.06);color:#e6eef6;padding:8px;border-radius:8px}
+    .small{font-size:13px;color:#cbd5e1}
+    label{font-size:13px}
+    .hint{font-size:12px;color:#9aa8bd}
+    .actions{display:flex;gap:8px}
+    .footer{margin-top:10px;font-size:13px;color:#9fb0c8}
+    @media(max-width:880px){.top{flex-direction:column}.controls{width:100%}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="top">
+      <div class="stage" id="stage">
+        <video id="cam" autoplay playsinline></video>
+        <img id="overlay" class="overlay-img" draggable="false" src="" alt="" />
+        <canvas id="captureCanvas" style="display:none"></canvas>
+      </div>
+      <div class="controls">
+        <div class="row">
+          <label for="file">Escolher esboço</label>
+          <input id="file" type="file" accept="image/*">
+        </div>
+        <div class="row">
+          <label class="small">Opacidade</label>
+          <input id="opacity" type="range" min="0" max="1" step="0.01" value="0.6">
+        </div>
+        <div class="row">
+          <label class="small">Modo de mistura</label>
+          <select id="blend">
+            <option value="normal">Normal</option>
+            <option value="multiply">Multiply</option>
+            <option value="screen">Screen</option>
+            <option value="overlay">Overlay</option>
+            <option value="difference">Difference</option>
+          </select>
+        </div>
+        <div class="row">
+          <label class="small">Zoom</label>
+          <input id="scale" type="range" min="0.2" max="3" step="0.01" value="1">
+        </div>
+        <div class="row">
+          <label class="small">Rotação (°)</label>
+          <input id="rotate" type="range" min="-180" max="180" step="1" value="0">
+        </div>
+        <div class="row actions">
+          <button id="reset">Resetar posição</button>
+          <button id="flip">Virar horizontal</button>
+        </div>
+        <div class="row actions">
+          <button id="capture">Capturar (Salvar)</button>
+          <button id="switchCam">Câmera traseira/frontal</button>
+        </div>
+        <div class="hint">Toque e arraste a imagem para posicionar. Use dois dedos para dar zoom/rotacionar (touch). Em desktop, arraste com mouse e use a roda para zoom.</div>
+        <div class="footer">Permita acesso à câmera quando solicitado. O app roda inteiramente no seu navegador.</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById('cam');
+    const overlay = document.getElementById('overlay');
+    const fileIn = document.getElementById('file');
+    const opacity = document.getElementById('opacity');
+    const blend = document.getElementById('blend');
+    const scaleRange = document.getElementById('scale');
+    const rotateRange = document.getElementById('rotate');
+    const resetBtn = document.getElementById('reset');
+    const flipBtn = document.getElementById('flip');
+    const captureBtn = document.getElementById('capture');
+    const switchCamBtn = document.getElementById('switchCam');
+    const stage = document.getElementById('stage');
+    const canvas = document.getElementById('captureCanvas');
+
+    let facingMode = 'environment';
+    let stream = null;
+
+    async function startCamera() {
+      if(stream) stream.getTracks().forEach(t=>t.stop());
+      try{
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode }, audio: false });
+        video.srcObject = stream;
+      }catch(e){
+        alert('Não foi possível acessar a câmera: ' + e.message);
+      }
+    }
+
+    startCamera();
+
+    fileIn.addEventListener('change', e=>{
+      const f = e.target.files[0];
+      if(!f) return;
+      const url = URL.createObjectURL(f);
+      overlay.src = url;
+      overlay.onload = ()=>{
+        const rect = stage.getBoundingClientRect();
+        overlay.style.width = rect.width + 'px';
+        overlay.style.height = 'auto';
+        overlay.dataset.scale = 1;
+        overlay.dataset.rotate = 0;
+        overlay.style.transform = 'translate(0px,0px) scale(1) rotate(0deg)';
+        overlay.style.opacity = opacity.value;
+      }
+    });
+
+    opacity.addEventListener('input', ()=> overlay.style.opacity = opacity.value);
+    blend.addEventListener('change', ()=> overlay.style.mixBlendMode = blend.value);
+    scaleRange.addEventListener('input', ()=> updateTransform());
+    rotateRange.addEventListener('input', ()=> updateTransform());
+
+    resetBtn.addEventListener('click', ()=>{
+      overlay.style.left = '0px'; overlay.style.top = '0px';
+      scaleRange.value = 1; rotateRange.value = 0; overlay.style.transform = 'translate(0px,0px) scale(1) rotate(0deg)';
+    });
+
+    flipBtn.addEventListener('click', ()=>{
+      const cur = overlay.dataset.flipped === 'true';
+      overlay.dataset.flipped = (!cur).toString();
+      updateTransform();
+    });
+
+    function updateTransform(){
+      const s = parseFloat(scaleRange.value);
+      const r = parseFloat(rotateRange.value);
+      const flipped = overlay.dataset.flipped === 'true';
+      const translate = overlay.dataset.translate || '0,0';
+      const [tx,ty] = translate.split(',').map(Number);
+      overlay.style.transform = `translate(${tx}px,${ty}px) scale(${flipped?-s:s}) rotate(${r}deg)`;
+    }
+
+    let dragging=false, lastX=0, lastY=0, transX=0, transY=0;
+
+    overlay.addEventListener('pointerdown', e=>{
+      overlay.setPointerCapture(e.pointerId);
+      dragging=true; lastX=e.clientX; lastY=e.clientY;
+    });
+    overlay.addEventListener('pointermove', e=>{
+      if(!dragging) return;
+      const dx = e.clientX-lastX, dy=e.clientY-lastY;
+      lastX=e.clientX; lastY=e.clientY;
+      transX+=dx; transY+=dy;
+      overlay.dataset.translate = transX+','+transY;
+      updateTransform();
+    });
+    overlay.addEventListener('pointerup', e=>{ overlay.releasePointerCapture(e.pointerId); dragging=false; });
+    overlay.addEventListener('pointercancel', ()=>dragging=false);
+
+    overlay.addEventListener('wheel', e=>{
+      e.preventDefault();
+      let s = parseFloat(scaleRange.value);
+      s *= e.deltaY>0?0.95:1.05;
+      s = Math.max(0.2, Math.min(3, s));
+      scaleRange.value = s.toFixed(2);
+      updateTransform();
+    }, {passive:false});
+
+    let lastDist=null, lastAngle=null;
+    stage.addEventListener('touchmove', e=>{
+      if(e.touches.length===2){
+        e.preventDefault();
+        const t1=e.touches[0], t2=e.touches[1];
+        const dx=t2.clientX-t1.clientX, dy=t2.clientY-t1.clientY;
+        const dist=Math.hypot(dx,dy);
+        const angle=Math.atan2(dy,dx)*180/Math.PI;
+        if(lastDist){
+          const scaleFactor = dist/lastDist;
+          let s = parseFloat(scaleRange.value)*scaleFactor;
+          s = Math.max(0.2, Math.min(3, s));
+          scaleRange.value = s.toFixed(2);
+        }
+        if(lastAngle){
+          const da = angle-lastAngle;
+          let r = parseFloat(rotateRange.value)+da;
+          if(r>180) r-=360; if(r<-180) r+=360;
+          rotateRange.value = r.toFixed(1);
+        }
+        lastDist=dist; lastAngle=angle;
+        updateTransform();
+      }
+    }, {passive:false});
+    stage.addEventListener('touchend', e=>{ if(e.touches.length<2){ lastDist=null; lastAngle=null; } });
+
+    captureBtn.addEventListener('click', ()=>{
+      const rect = stage.getBoundingClientRect();
+      const w = rect.width, h=rect.height;
+      canvas.width=w; canvas.height=h;
+      const ctx=canvas.getContext('2d');
+      ctx.drawImage(video,0,0
